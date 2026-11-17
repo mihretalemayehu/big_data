@@ -18,384 +18,359 @@ from more than 200,000 users. This project builds a complete ETL pipeline that:
 6. **Verifies** every table using `SELECT COUNT(*)`
 7. **Reports** charts and analytics answering the business question
 
----
+## Instacart Grocery Orders ETL
 
-## Entity-Relationship Diagram (ERD)
+A Python and PostgreSQL pipeline for exploring, transforming, cleaning, loading, and verifying the Instacart Market Basket Analysis dataset.
 
-```mermaid
-erDiagram
-    AISLES {
-        smallint aisle_id PK
-        varchar  aisle_name
-    }
-    DEPARTMENTS {
-        smallint department_id PK
-        varchar  department_name
-    }
-    PRODUCTS {
-        integer  product_id PK
-        varchar  product_name
-        smallint aisle_id FK
-        smallint department_id FK
-        smallint product_name_length
-    }
-    ORDERS {
-        integer  order_id PK
-        integer  user_id
-        varchar  eval_set
-        smallint order_number
-        smallint order_dow
-        smallint order_hour_of_day
-        real     days_since_prior_order
-        boolean  is_first_order
-        varchar  order_period
-    }
-    ORDER_PRODUCTS_TRAIN {
-        integer  order_id PK FK
-        integer  product_id PK FK
-        smallint add_to_cart_order
-        smallint reordered
-        boolean  is_reordered
-    }
-    ORDER_PRODUCTS_PRIOR {
-        integer  order_id FK
-        integer  product_id FK
-        smallint add_to_cart_order
-        smallint reordered
-        boolean  is_reordered
-    }
+The project is designed to answer questions such as when customers place orders and how often they reorder products. It includes a chunked workflow for the large prior-order products file, which helps control memory use during exploration and database loading.
 
-    AISLES       ||--o{ PRODUCTS              : "has"
-    DEPARTMENTS  ||--o{ PRODUCTS              : "contains"
-    ORDERS       ||--o{ ORDER_PRODUCTS_TRAIN  : "includes"
-    PRODUCTS     ||--o{ ORDER_PRODUCTS_TRAIN  : "appears in"
-    ORDERS       ||--o{ ORDER_PRODUCTS_PRIOR  : "includes"
-    PRODUCTS     ||--o{ ORDER_PRODUCTS_PRIOR  : "appears in"
-```
+## Contents
 
----
+- [Project workflow](#project-workflow)
+- [Repository structure](#repository-structure)
+- [Requirements](#requirements)
+- [Setup](#setup)
+- [Download the dataset](#download-the-dataset)
+- [Configuration](#configuration)
+- [Run the project](#run-the-project)
+- [Database tables](#database-tables)
+- [Data handling notes](#data-handling-notes)
+- [Documentation](#documentation)
+- [Troubleshooting](#troubleshooting)
 
-## Project Structure
+## Project workflow
 
-```
+The full pipeline runs these stages in order:
+
+1. **Explore:** Read the input files and write descriptive statistics to `reports/data_exploration.txt`.
+2. **Transform:** Standardize names and types and add derived fields such as `is_first_order`, `order_period`, and `is_reordered`.
+3. **Clean:** Remove duplicate or invalid records and invalid product/order references. First-order null values in `days_since_prior_order` are retained because they are meaningful.
+4. **Save processed data:** Write cleaned CSVs for the smaller tables to `data/processed/`.
+5. **Load:** Bulk-load data into PostgreSQL with `COPY FROM STDIN`.
+6. **Verify:** Compare loaded row counts with PostgreSQL `COUNT(*)` results and write `reports/verification_report.txt`.
+
+The `order_products__prior.csv` file is processed in chunks of 500,000 rows. It is not loaded into one large DataFrame or saved as a single processed CSV.
+
+## Repository structure
+
+```text
 instacart-bigdata-etl/
-│
-├── data/
-│   ├── raw/            ← Place the 6 Kaggle CSV files here
-│   ├── processed/      ← Cleaned CSVs saved here by the pipeline
-│   └── sample/         ← Tiny fake CSVs for testing (auto-generated)
-│
-├── src/
-│   ├── __init__.py
-│   ├── explore.py      ← Pandas exploration (all 9 required methods)
-│   ├── transform.py    ← Type conversions and derived columns
-│   ├── clean.py        ← Missing values, duplicates, orphan FKs
-│   ├── database.py     ← psycopg2 connection, DB creation
-│   ├── load.py         ← COPY FROM STDIN bulk load, constraints
-│   ├── pipeline.py     ← Orchestrator (Steps 1-5)
-│   ├── verify.py       ← COUNT(*) verification
-│   └── charts.py       ← 3 PNG charts (matplotlib Agg)
-│
-├── sql/
-│   ├── schema.sql          ← CREATE TABLE statements
-│   ├── verify_counts.sql   ← SELECT COUNT(*) for all tables
-│   └── analytics.sql       ← 9 business analytics queries
-│
-├── tests/
-│   ├── __init__.py
-│   ├── test_transform.py   ← 20 unit tests for transform.py
-│   └── test_clean.py       ← 20 unit tests for clean.py
-│
+├── data/                         # Local data files; ignored by Git
+│   ├── raw/                      # Six source CSV files go here
+│   └── processed/                # Cleaned smaller-table CSVs
 ├── notebooks/
-│   └── exploration.ipynb   ← Jupyter notebook (all 9 pandas methods)
-│
-├── reports/                ← Generated reports and PNG charts
-│
-├── run_pipeline.py         ← MAIN ENTRY POINT
-├── run_exploration.py      ← Exploration only (no DB)
-├── run_verification.py     ← DB COUNT(*) verification
-├── run_charts.py           ← Generate PNG charts
-├── make_sample_data.py     ← Create tiny fake CSVs for testing
-│
-├── .env.example            ← Copy this to .env and add your password
-├── .gitignore
-├── requirements.txt
-├── setup_windows.ps1       ← Automated Windows setup script
-├── README.md               ← This file
-└── REPORT_TEMPLATE.md      ← Fill-in report template
+│   └── exploration.ipynb         # Jupyter exploration notebook
+├── reports/                      # Exploration, cleaning, verification, logs, charts
+│   ├── data_exploration.txt      # Full data exploration report
+│   ├── cleaning_report.txt       # Data cleaning summary
+│   ├── verification_report.txt   # Database verification results
+│   ├── business_insights.txt     # Business analytics results
+│   └── *.png                     # Generated charts
+├── sql/
+│   ├── schema.sql                # PostgreSQL table definitions
+│   ├── verify_counts.sql         # Row-count queries
+│   └── business_analytics.sql    # Business intelligence queries
+├── src/
+│   ├── charts.py                 # Chart-generation functions
+│   ├── clean.py                  # Data-cleaning rules
+│   ├── database.py               # PostgreSQL connection helpers
+│   ├── explore.py                # CSV exploration and reporting
+│   ├── load.py                   # Processed-data saving and database loading
+│   ├── pipeline.py               # ETL orchestration
+│   ├── transform.py              # Type conversions and derived columns
+│   └── verify.py                  # Database row-count verification
+├── run_exploration.py            # Explore input CSVs
+├── run_pipeline.py               # Main ETL entry point
+├── run_verification.py           # Verify database contents
+├── run_analytics.py              # Run business intelligence queries
+├── requirements.txt              # Pinned Python dependencies
+├── README.md                     # Project documentation
+├── PROJECT_REPORT.txt            # Complete project report
+├── DATA_DICTIONARY.txt           # Data dictionary with all column definitions
+└── ER_DIAGRAM.txt                # Entity-relationship diagram documentation
 ```
 
----
+The `data/` directory and `.env` file are excluded from Git. Clone the repository, then create the data folders and add the source files locally. The repository currently does not include a sample-data generator or an automated test suite.
 
-## Quick Start (Windows + VS Code)
+## Requirements
 
-### Prerequisites
-- Windows 10 / 11
-- Python 3.11 (from python.org — check "Add to PATH")
-- PostgreSQL installed locally (from postgresql.org)
-- VS Code with the Python extension
+- Windows, macOS, or Linux
+- Python 3.11 recommended
+- PostgreSQL running locally or reachable over the network
+- Access to download the dataset from Kaggle
 
----
+Python packages are pinned in `requirements.txt`: pandas, psycopg2-binary, python-dotenv, matplotlib, ipykernel, and notebook.
 
-## Step-by-Step Windows Setup
+## Setup
 
-### Step 1 — Download and extract the project
+Run these commands from the repository root. The scripts use project-relative paths for input and output files.
 
-1. Download `instacart-bigdata-etl.zip`
-2. Right-click → **Extract All** → choose a folder (e.g. `C:\Projects\`)
-3. You should now have a folder: `C:\Projects\instacart-bigdata-etl\`
+### 1. Create a virtual environment
 
-### Step 2 — Open the project in VS Code
+Windows PowerShell:
 
-1. Open VS Code
-2. **File → Open Folder** → select `instacart-bigdata-etl`
-3. Open a terminal: **Terminal → New Terminal** (opens PowerShell)
+```powershell
+py -3.11 -m venv .venv
+```
 
-### Step 3 — Allow PowerShell scripts (one-time per session)
+Activate it:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+If PowerShell blocks activation, allow scripts for the current terminal session only:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```
 
-> This only applies to the current PowerShell window. It does not change system settings.
+macOS or Linux:
 
-### Step 4 — Run the automated setup script
+```bash
+python3.11 -m venv .venv
+source .venv/bin/activate
+```
+
+### 2. Install dependencies
 
 ```powershell
-.\setup_windows.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 ```
 
-This script:
-- Checks your Python version
-- Creates a virtual environment (`venv/`)
-- Installs all packages from `requirements.txt`
-- Copies `.env.example` → `.env`
-- Verifies imports work
+### 3. Create local data folders
 
-### Step 5 — Configure your database credentials
+From the project root:
 
-Open `.env` in VS Code and replace the placeholder:
-
+```powershell
+New-Item -ItemType Directory -Force data\raw, data\processed | Out-Null
 ```
+
+On macOS or Linux:
+
+```bash
+mkdir -p data/raw data/processed
+```
+
+## Download the dataset
+
+Download the Instacart Market Basket Analysis data from the [Kaggle competition data page](https://www.kaggle.com/competitions/instacart-market-basket-analysis/data). Kaggle sign-in and acceptance of its dataset terms may be required.
+
+Extract the archive and place these six files in `data/raw/`:
+
+```text
+data/raw/aisles.csv
+data/raw/departments.csv
+data/raw/products.csv
+data/raw/orders.csv
+data/raw/order_products__train.csv
+data/raw/order_products__prior.csv
+```
+
+Keep the double underscores in `order_products__train.csv` and `order_products__prior.csv`. The raw data is not committed to this repository; each user downloads it from Kaggle.
+
+## Configuration
+
+Create a file named `.env` in the repository root. The file is ignored by Git. Set `DB_PASSWORD` to the password for your PostgreSQL user:
+
+```dotenv
 DB_HOST=localhost
 DB_PORT=5432
 DB_NAME=bigdata_db
 DB_USER=postgres
-DB_PASSWORD=replace_with_your_local_password   ← change this
+DB_PASSWORD=replace_with_your_local_password
 PRIOR_ROWS_LIMIT=3000000
 ```
 
-> `PRIOR_ROWS_LIMIT=3000000` loads the first 3 million rows of the 32-million-row
-> prior-order file. Set to `0` to load all rows (needs ~10 GB RAM).
+`DB_PASSWORD` is required for database operations. The other database values have defaults shown above. The database user must be able to connect to the PostgreSQL maintenance database and create `bigdata_db` if it does not already exist.
 
-### Step 6 — Create the bigdata_db database
+`PRIOR_ROWS_LIMIT` controls how many raw rows are read from `order_products__prior.csv` for database loading:
 
-**Option A — using psql (command line):**
-```powershell
-psql -U postgres -c "CREATE DATABASE bigdata_db;"
-```
+- `3000000` (default): load up to the first three million raw rows, before cleaning.
+- `0`: read and load the entire prior-order file. This can take substantially longer and requires more database storage and processing time.
 
-**Option B — using pgAdmin:**
-1. Open pgAdmin
-2. Connect to your local server
-3. Right-click **Databases** → **Create** → **Database**
-4. Name: `bigdata_db` → **Save**
+The prior file is still scanned in chunks for the exploration report, regardless of this database-loading limit.
 
-### Step 7 — Download the Kaggle dataset
+## Run the project
 
-1. Go to: https://www.kaggle.com/competitions/instacart-market-basket-analysis/data
-2. Sign in to Kaggle (free account required)
-3. Click **Download All** → saves `instacart-market-basket-analysis.zip`
-4. Extract the ZIP
-5. Copy these 6 files into `data\raw\`:
+Run commands from the repository root with the virtual environment activated.
 
-```
-data\raw\aisles.csv
-data\raw\departments.csv
-data\raw\products.csv
-data\raw\orders.csv
-data\raw\order_products__train.csv
-data\raw\order_products__prior.csv
-```
-
-> Note the double underscore in `order_products__prior.csv` and `order_products__train.csv`
-
-### Step 8 — Activate the virtual environment
-
-```powershell
-.\venv\Scripts\Activate.ps1
-```
-
-You should see `(venv)` at the start of your prompt.
-
-### Step 9 — Test with sample data first (no Kaggle files needed)
-
-```powershell
-python make_sample_data.py
-python run_pipeline.py --raw-dir data/sample --skip-db
-```
-
-Expected output: pipeline runs, cleans 6 tiny sample files, saves to `data/processed/`.
-
-### Step 10 — Run exploration on real data
+### Explore the source files
 
 ```powershell
 python run_exploration.py
 ```
 
-Output saved to `reports/data_exploration.txt`
+To use a different input directory:
 
-### Step 11 — Run the full ETL pipeline
+```powershell
+python run_exploration.py --raw-dir path\to\raw
+```
+
+The script prints summary information and writes the detailed report to `reports/data_exploration.txt`. The prior-order file is read in 500,000-row chunks.
+
+### Run the pipeline without PostgreSQL
+
+```powershell
+python run_pipeline.py --skip-db
+```
+
+This runs exploration, transformation, cleaning, and processed-CSV saving without loading data into PostgreSQL. It still needs the source CSVs and scans the prior-order file for exploration. The cleaned smaller-table files are saved in `data/processed/`.
+
+Use a different input directory with:
+
+```powershell
+python run_pipeline.py --raw-dir path\to\raw --skip-db
+```
+
+### Run the full ETL pipeline
+
+Make sure PostgreSQL is running and `.env` is configured, then run:
 
 ```powershell
 python run_pipeline.py
 ```
 
-This runs all 5 steps:
-1. Extract + Explore → `reports/data_exploration.txt`
-2. Transform (type conversions, derived columns)
-3. Clean (removes invalid rows, keeps legitimate NaNs)
-4. Load into PostgreSQL `bigdata_db` via `COPY FROM STDIN`
-5. Verify with `SELECT COUNT(*)` → `reports/verification_report.txt`
+The pipeline creates `bigdata_db` if needed, creates the tables, loads the cleaned data, and verifies row counts. It writes logs and reports under `reports/`.
 
-### Step 12 — Verify database counts
+To test the connection to an already-created `bigdata_db`:
+
+```powershell
+python run_pipeline.py --test-connection
+```
+
+### Verify the database
+
+After loading the data, run:
 
 ```powershell
 python run_verification.py
-python run_verification.py --analytics
 ```
 
-### Step 13 — Generate charts
+This runs the SQL count queries and prints direct `COUNT(*)` results for the six tables. The full pipeline also writes `reports/verification_report.txt` during its verification stage.
+
+### Run business analytics queries
+
+After loading data into the database, run the business intelligence analysis:
 
 ```powershell
-python run_charts.py
+python run_analytics.py
 ```
 
-Saves to `reports/`:
+This executes all queries from `sql/business_analytics.sql` and generates a comprehensive report at `reports/business_insights.txt` with:
+- Customer ordering patterns (by hour, day, frequency)
+- Product reorder rates
+- Customer segmentation analysis
+- Shopping cart statistics
+- Popular products and departments
+
+You can also run individual queries manually:
+
+```powershell
+psql -U postgres -d bigdata_db -f sql/business_analytics.sql
+```
+
+### Generate charts
+
+After a pipeline run has created `data/processed/orders.csv`, generate the three charts with:
+
+```powershell
+python -c "import pandas as pd; from src.charts import generate_all_charts; generate_all_charts(pd.read_csv('data/processed/orders.csv'))"
+```
+
+The chart files are saved in `reports/`:
+
 - `chart_orders_per_dow.png`
 - `chart_orders_per_hour.png`
 - `chart_days_since_prior.png`
 
-### Step 14 — Run unit tests
-
-```powershell
-python -m unittest discover -s tests -v
-```
-
-Expected: all tests pass. No database or Kaggle files needed for tests.
-
-### Step 15 — Open the Jupyter notebook
+### Open the notebook
 
 ```powershell
 jupyter notebook notebooks/exploration.ipynb
 ```
 
----
+## Database tables
 
-## Running the Pipeline — All Commands Reference
+The PostgreSQL schema contains six tables:
 
-```powershell
-# Test PostgreSQL connection
-python run_pipeline.py --test-connection
+| Table | Contents |
+| --- | --- |
+| `aisles` | Product aisle names and identifiers |
+| `departments` | Product department names and identifiers |
+| `products` | Product names and aisle/department references |
+| `orders` | Order, user, time, and prior-order interval attributes |
+| `order_products_train` | Products included in training-set orders |
+| `order_products_prior` | Products included in prior orders |
 
-# Run on sample data (no DB, no Kaggle files)
-python run_pipeline.py --raw-dir data/sample --skip-db
+Primary keys, foreign keys, and indexes are added after bulk loading. The `days_since_prior_order` column is nullable; null values mark a customer's first order.
 
-# Run explore + clean only (no DB)
-python run_pipeline.py --skip-db
+Useful derived fields include:
 
-# Run the full pipeline (requires PostgreSQL + Kaggle data)
-python run_pipeline.py
+- `is_first_order`: true when `days_since_prior_order` is null.
+- `order_period`: Morning, Afternoon, Evening, or Night, derived from `order_hour_of_day`.
+- `is_reordered`: true when the source `reordered` value is 1.
+- `product_name_length`: character count of the product name.
 
-# Run exploration only
-python run_exploration.py
+The transformed products CSV also includes `product_name_upper`; the PostgreSQL `products` table does not store that extra field.
 
-# Run verification only (after pipeline has loaded data)
-python run_verification.py
-python run_verification.py --analytics
+## Data handling notes
 
-# Generate charts
-python run_charts.py
+- The pipeline truncates and reloads destination tables on each full run. Re-running it replaces the existing table contents.
+- `PRIOR_ROWS_LIMIT` applies before cleaning, so the final number of loaded prior rows can be lower than the configured limit.
+- The prior-order CSV is read in 500,000-row chunks to reduce memory usage.
+- First-order null values in `days_since_prior_order` are valid and are preserved.
+- `data/` and `.env` are ignored by Git. Do not add credentials or large raw datasets to commits.
+- `reports/` contains generated outputs; rerunning the pipeline may replace existing report files.
 
-# Run tests
-python -m unittest discover -s tests -v
+## Documentation
 
-# Compile-check all source files
-python -m compileall src
-```
+The project includes comprehensive documentation:
 
----
+- **README.md** - Setup instructions and quick start guide
+- **PROJECT_REPORT.txt** - Complete project report with findings and analysis
+- **DATA_DICTIONARY.txt** - Detailed description of all tables and columns
+- **ER_DIAGRAM.txt** - Entity-relationship diagram and database design
+- **sql/business_analytics.sql** - Business intelligence queries with comments
 
-## Teacher Requirement → File and Function Mapping
-
-| # | Requirement | File | Function / Line |
-|---|-------------|------|-----------------|
-| 1 | `pd.read_csv()` | `src/explore.py` | `_explore_small_file()` line ~56; `_explore_large_file_chunked()` line ~100 |
-| 2 | `df.head()` | `src/explore.py` | `_explore_small_file()` — `df.head(5)` |
-| 3 | `df.columns` | `src/explore.py` | `_explore_small_file()` — `df.columns.tolist()` |
-| 4 | `df.describe()` | `src/explore.py` | `_explore_small_file()` — `df.describe(include="all")` |
-| 5 | `df.info()` | `src/explore.py` | `_explore_small_file()` — `df.info(buf=buf2)` |
-| 6 | `df.shape` | `src/explore.py` | `_explore_small_file()` — `rows, cols = df.shape` |
-| 7 | `df.dtypes` | `src/explore.py` | `_explore_small_file()` — `df.dtypes.to_string(buf)` |
-| 8 | `df.isnull().sum()` | `src/explore.py` | `_explore_small_file()` — `df.isnull().sum()` |
-| 9 | Duplicate detection | `src/explore.py` | `_explore_small_file()` — `df.duplicated().sum()` |
-| 10 | Python `for` loop over CSVs | `src/explore.py` | `explore_all_files()` — `for name, (path, is_large) in csv_files.items()` |
-| 11 | `chunksize=` for large files | `src/explore.py` | `_explore_large_file_chunked()` — `pd.read_csv(path, chunksize=CHUNK_SIZE)` |
-| 12 | Transform data types | `src/transform.py` | `transform_orders()`, `transform_products()`, etc. |
-| 13 | Create derived columns | `src/transform.py` | `is_first_order`, `order_period`, `product_name_length`, `is_reordered` |
-| 14 | Clean missing values | `src/clean.py` | `clean_orders()` — preserves NaN for first orders |
-| 15 | Load into PostgreSQL `bigdata_db` | `src/load.py` | `load_all()` + `_copy_df()` using `cursor.copy_expert()` |
-| 16 | `SELECT COUNT(*)` verification | `src/verify.py` | `count_table()` + `sql/verify_counts.sql` |
-| 17 | SQL schema | `sql/schema.sql` | All 6 `CREATE TABLE IF NOT EXISTS` statements |
-
----
+These documents provide everything needed to understand, use, and extend the project.
 
 ## Troubleshooting
 
-### `psycopg2.OperationalError: could not connect to server`
-- Make sure PostgreSQL service is running:
-  ```powershell
-  Get-Service -Name postgresql*
-  # If stopped:
-  Start-Service -Name postgresql-x64-15  # adjust version number
-  ```
-- Check `.env` credentials match your PostgreSQL installation
-- Try connecting manually: `psql -U postgres`
+### `FileNotFoundError` or “File not found” for a CSV
 
-### `ModuleNotFoundError: No module named 'pandas'`
-- Make sure the virtual environment is activated: `.\venv\Scripts\Activate.ps1`
-- Reinstall: `pip install -r requirements.txt`
+Check that all six Kaggle files are in `data/raw/` and that the filenames match exactly, including the double underscores in the two order-product files.
 
-### `FileNotFoundError: data/raw/orders.csv`
-- The Kaggle CSV files must be placed manually in `data/raw/`
-- See Step 7 above for download instructions
+### `DB_PASSWORD is not set`
 
-### `password authentication failed for user "postgres"`
-- Open `.env` and correct your `DB_PASSWORD`
-- If you forgot your PostgreSQL password, reset it via pgAdmin
+Create `.env` in the repository root and set `DB_PASSWORD`. Restart the command after saving the file.
 
-### Pipeline runs slowly on the prior file
-- Reduce `PRIOR_ROWS_LIMIT` in `.env` (e.g. `500000`)
-- Or test with sample data: `python run_pipeline.py --raw-dir data/sample --skip-db`
+### PostgreSQL connection refused
 
-### PowerShell says "execution of scripts is disabled"
+Make sure the PostgreSQL service is running and confirm `DB_HOST` and `DB_PORT` in `.env`. Test the connection with:
+
 ```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+python run_pipeline.py --test-connection
 ```
 
----
+### Database creation fails
 
-## Important Notes
+The configured database user must be allowed to connect to the `postgres` maintenance database and create a database. Alternatively, create `bigdata_db` with pgAdmin or `psql`, then run the pipeline again.
 
-- **Never commit `.env`** — it contains your database password
-- **Never overwrite `data/raw/`** — the pipeline only reads from it
-- **The prior-order file is ~550 MB** — it is always read in chunks
-- **Re-running the pipeline is safe** — each table is TRUNCATEd before reload
-- **`days_since_prior_order` NaN values are legitimate** — they represent first orders and are preserved throughout
+### Missing Python package
 
----
+Activate the project virtual environment and reinstall the pinned dependencies:
 
-## Data Source
+```powershell
+python -m pip install -r requirements.txt
+```
 
-Kaggle Instacart Market Basket Analysis:
-https://www.kaggle.com/competitions/instacart-market-basket-analysis/data
+### Pipeline takes a long time
+
+The prior-order file is large and is scanned in chunks. Keep `PRIOR_ROWS_LIMIT=3000000` for a smaller database load; set it to `0` only when you intend to load all prior-order rows.
+
+## Data source
+
+Instacart Market Basket Analysis dataset: [Kaggle competition page](https://www.kaggle.com/competitions/instacart-market-basket-analysis/data).
+|---|-------------|------|-----------------|

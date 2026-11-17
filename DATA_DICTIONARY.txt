@@ -1,0 +1,319 @@
+================================================================================
+                    INSTACART DATA DICTIONARY
+           Instacart Market Basket Analysis Dataset
+================================================================================
+
+This document describes all tables, columns, data types, and business rules
+for the Instacart ETL project database.
+
+================================================================================
+TABLE: aisles
+================================================================================
+Description: Product aisle categories (e.g., "fresh vegetables", "yogurt")
+Row Count: 134 unique aisles
+Primary Key: aisle_id
+
+Columns:
+--------
+aisle_id      SMALLINT     NOT NULL    Unique identifier for each aisle (1-134)
+aisle_name    VARCHAR(100) NOT NULL    Human-readable aisle name
+                                       Examples: "fresh vegetables", "packaged cheese"
+
+Business Rules:
+- Every aisle_id is unique
+- All products must reference a valid aisle_id
+- Aisle names are in lowercase
+
+
+================================================================================
+TABLE: departments
+================================================================================
+Description: Product department categories (e.g., "produce", "dairy eggs")
+Row Count: 21 unique departments
+Primary Key: department_id
+
+Columns:
+--------
+department_id    SMALLINT    NOT NULL    Unique identifier (1-21)
+department_name  VARCHAR(50) NOT NULL    Department name
+                                        Examples: "produce", "dairy eggs", "frozen"
+
+Business Rules:
+- Every department_id is unique
+- All products must reference a valid department_id
+- Department names are in lowercase
+
+
+================================================================================
+TABLE: products
+================================================================================
+Description: All products available in the store
+Row Count: ~49,688 products
+Primary Key: product_id
+Foreign Keys: aisle_id → aisles(aisle_id)
+              department_id → departments(department_id)
+
+Columns:
+--------
+product_id           INTEGER      NOT NULL    Unique product identifier (1-49688)
+product_name         VARCHAR(500) NOT NULL    Full product name
+                                              Example: "Chocolate Sandwich Cookies"
+aisle_id             SMALLINT     NOT NULL    Reference to aisles table
+department_id        SMALLINT     NOT NULL    Reference to departments table
+product_name_length  SMALLINT     NULL        Derived: LENGTH(product_name)
+                                              Used for analysis of product naming
+
+Business Rules:
+- Every product has a unique product_id
+- product_name is mixed case (not standardized)
+- Every product belongs to exactly one aisle and one department
+- product_name_length is computed during transformation
+
+
+================================================================================
+TABLE: orders
+================================================================================
+Description: Customer orders with timing and sequence information
+Row Count: ~3,421,083 orders from 206,209 unique customers
+Primary Key: order_id
+
+Columns:
+--------
+order_id                INTEGER     NOT NULL    Unique order identifier (1-3421083)
+user_id                 INTEGER     NOT NULL    Customer identifier (1-206209)
+eval_set                VARCHAR(10) NOT NULL    Dataset split: "prior", "train", or "test"
+order_number            SMALLINT    NOT NULL    Sequential order number per user (1-100)
+                                               1 = first order, 2 = second order, etc.
+order_dow               SMALLINT    NOT NULL    Day of week (0-6)
+                                               0 = Sunday, 1 = Monday, ..., 6 = Saturday
+order_hour_of_day       SMALLINT    NOT NULL    Hour of day (0-23)
+                                               0 = midnight, 13 = 1:00 PM, etc.
+days_since_prior_order  REAL        NULL        Days since previous order
+                                               NULL = first order (no prior order)
+is_first_order          BOOLEAN     NULL        Derived: days_since_prior_order IS NULL
+order_period            VARCHAR(12) NULL        Derived time period:
+                                               "Morning"   = 6:00 AM - 11:59 AM
+                                               "Afternoon" = 12:00 PM - 5:59 PM
+                                               "Evening"   = 6:00 PM - 11:59 PM
+                                               "Night"     = 12:00 AM - 5:59 AM
+
+Business Rules:
+- Every order has a unique order_id
+- order_number = 1 for first orders, increments with each new order
+- days_since_prior_order is NULL for first orders (intentional)
+- First orders have is_first_order = TRUE
+- eval_set determines which dataset this order belongs to:
+  * "prior" = historical orders (most data)
+  * "train" = training set for machine learning
+  * "test" = test set for predictions
+
+
+================================================================================
+TABLE: order_products_train
+================================================================================
+Description: Products included in training set orders
+Row Count: ~1,384,617 line items
+Primary Key: (order_id, product_id) composite
+Foreign Keys: order_id → orders(order_id)
+              product_id → products(product_id)
+
+Columns:
+--------
+order_id           INTEGER  NOT NULL    Reference to orders table
+product_id         INTEGER  NOT NULL    Reference to products table
+add_to_cart_order  SMALLINT NOT NULL    Sequence position in cart (1, 2, 3, ...)
+                                       1 = first item added, 2 = second, etc.
+reordered          SMALLINT NOT NULL    Reorder flag: 0 = new product, 1 = reordered
+is_reordered       BOOLEAN  NULL        Derived: reordered = 1
+
+Business Rules:
+- Each (order_id, product_id) combination is unique
+- add_to_cart_order starts at 1 for each order
+- reordered = 1 means customer has ordered this product before
+- Only includes orders where eval_set = "train"
+
+
+================================================================================
+TABLE: order_products_prior
+================================================================================
+Description: Products from prior orders (historical data)
+Row Count: 3,000,000 loaded (32,434,489 in full raw dataset)
+Primary Key: None (too large for composite PK)
+Foreign Keys: order_id → orders(order_id)
+              product_id → products(product_id)
+
+Columns:
+--------
+order_id           INTEGER  NOT NULL    Reference to orders table
+product_id         INTEGER  NOT NULL    Reference to products table
+add_to_cart_order  SMALLINT NOT NULL    Sequence position in cart
+reordered          SMALLINT NOT NULL    Reorder flag: 0 or 1
+is_reordered       BOOLEAN  NULL        Derived: reordered = 1
+
+Business Rules:
+- This is the largest table in the database
+- Loaded in 500,000-row chunks to manage memory
+- No primary key constraint due to size (improves load performance)
+- Indexes on order_id and product_id for query performance
+- Only includes orders where eval_set = "prior"
+- PRIOR_ROWS_LIMIT in .env controls how many rows are loaded
+
+
+================================================================================
+DERIVED COLUMNS EXPLANATION
+================================================================================
+
+The ETL pipeline creates several derived columns for analysis convenience:
+
+1. product_name_length (products table)
+   - Calculated as: LENGTH(product_name)
+   - Purpose: Analyze product naming patterns
+   - Example: "Banana" → 6, "Organic Banana" → 14
+
+2. is_first_order (orders table)
+   - Calculated as: days_since_prior_order IS NULL
+   - Purpose: Identify first-time customer orders
+   - Values: TRUE (first order) or FALSE (repeat order)
+
+3. order_period (orders table)
+   - Calculated from order_hour_of_day:
+     * 0-5: "Night"
+     * 6-11: "Morning"
+     * 12-17: "Afternoon"
+     * 18-23: "Evening"
+   - Purpose: Group orders by time of day for analysis
+
+4. is_reordered (order_products_train & order_products_prior)
+   - Calculated as: reordered = 1
+   - Purpose: Boolean flag for easier filtering and aggregation
+   - Values: TRUE (customer reordered) or FALSE (new purchase)
+
+
+================================================================================
+DATA QUALITY NOTES
+================================================================================
+
+MISSING VALUES:
+- days_since_prior_order: 206,209 NULL values (6% of orders)
+  → This is EXPECTED and VALID for first-time orders
+  → Do NOT treat as data quality issue
+
+- Other columns: No missing values (all required fields populated)
+
+DUPLICATES:
+- No duplicate rows found in any table after cleaning
+- Cleaning process removes any duplicates from raw data
+
+DATA RANGES:
+- order_dow: 0-6 (Sunday to Saturday)
+- order_hour_of_day: 0-23 (midnight to 11 PM)
+- days_since_prior_order: 0-30 (or NULL for first orders)
+- add_to_cart_order: typically 1-80 (maximum items in cart)
+- reordered: 0 or 1 only
+
+
+================================================================================
+DATABASE RELATIONSHIPS (ENTITY-RELATIONSHIP)
+================================================================================
+
+aisles (1) ──────< (many) products
+departments (1) ──────< (many) products
+products (1) ──────< (many) order_products_train
+products (1) ──────< (many) order_products_prior
+orders (1) ──────< (many) order_products_train
+orders (1) ──────< (many) order_products_prior
+
+Cardinality:
+- One aisle can have many products
+- One department can have many products
+- One product can appear in many order line items
+- One order can contain many products
+
+
+================================================================================
+INDEXES FOR QUERY PERFORMANCE
+================================================================================
+
+After data loading, the following indexes are created:
+
+PRIMARY KEYS:
+- aisles: aisle_id
+- departments: department_id
+- products: product_id
+- orders: order_id
+- order_products_train: (order_id, product_id) composite
+
+FOREIGN KEY INDEXES:
+- products: idx_products_aisle on aisle_id
+- products: idx_products_dept on department_id
+- order_products_train: idx_opt_order on order_id
+- order_products_prior: idx_opp_order on order_id
+- order_products_prior: idx_opp_product on product_id
+
+ADDITIONAL INDEXES:
+- orders: idx_orders_user on user_id (for customer analysis)
+
+
+================================================================================
+BUSINESS METRICS REFERENCE
+================================================================================
+
+KEY PERFORMANCE INDICATORS (KPIs):
+
+1. Customer Retention Rate
+   - Formula: (Repeat customers / Total customers) × 100
+   - Data: COUNT(DISTINCT user_id WHERE order_number > 1)
+
+2. Reorder Rate
+   - Formula: (Reordered items / Total items) × 100
+   - Data: SUM(is_reordered) / COUNT(*)
+
+3. Average Cart Size
+   - Formula: Total items / Total orders
+   - Data: COUNT(product_id) / COUNT(DISTINCT order_id)
+
+4. Average Days Between Orders
+   - Formula: AVG(days_since_prior_order) excluding NULLs
+   - Data: AVG(days_since_prior_order WHERE NOT NULL)
+
+5. Peak Ordering Hours
+   - Data: GROUP BY order_hour_of_day, COUNT(*)
+
+6. Popular Products
+   - Data: GROUP BY product_id, COUNT(*) ORDER BY COUNT(*) DESC
+
+
+================================================================================
+DATA SOURCE & DATASET INFORMATION
+================================================================================
+
+Source: Instacart Market Basket Analysis (Kaggle Competition)
+URL: https://www.kaggle.com/competitions/instacart-market-basket-analysis
+License: Dataset is anonymized and provided for educational/research purposes
+Date Range: Not specified in dataset (historical grocery orders)
+Geography: United States (Instacart operations)
+
+Raw Files:
+- aisles.csv (134 rows)
+- departments.csv (21 rows)
+- products.csv (49,688 rows)
+- orders.csv (3,421,083 rows)
+- order_products__train.csv (1,384,617 rows)
+- order_products__prior.csv (32,434,489 rows)
+
+Total Raw Data Size: ~2.5 GB uncompressed
+
+
+================================================================================
+REVISION HISTORY
+================================================================================
+
+Version 1.0 - Initial data dictionary created
+- All 6 tables documented
+- Column definitions and business rules added
+- Derived columns explained
+- Entity relationships documented
+
+================================================================================
+END OF DATA DICTIONARY
+================================================================================

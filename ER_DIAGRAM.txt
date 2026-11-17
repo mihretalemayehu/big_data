@@ -1,0 +1,398 @@
+================================================================================
+                 ENTITY-RELATIONSHIP DIAGRAM (ER DIAGRAM)
+                    Instacart Database Schema
+================================================================================
+
+This document describes the entity-relationship model for the Instacart
+Market Basket Analysis database, including all tables, relationships,
+cardinalities, and constraints.
+
+================================================================================
+VISUAL ER DIAGRAM (ASCII Art)
+================================================================================
+
+                              ┌─────────────────────┐
+                              │      aisles         │
+                              ├─────────────────────┤
+                              │ PK: aisle_id        │
+                              │     aisle_name      │
+                              └──────────┬──────────┘
+                                         │
+                                         │ 1
+                                         │
+                                         │ has
+                                         │
+                                         │ N
+                              ┌──────────▼──────────┐
+               ┌──────────────┤     products        │
+               │              ├─────────────────────┤
+               │              │ PK: product_id      │
+               │              │ FK: aisle_id        │◄─────┐
+               │              │ FK: department_id   │      │
+               │              │     product_name    │      │
+               │              │     product_name_   │      │
+               │              │         length      │      │
+               │              └──────────┬──────────┘      │
+               │                         │                 │
+               │                         │ N               │ N
+               │                         │                 │
+               │ N                       │ has             │ has
+               │                         │                 │
+               │                         │ 1               │ 1
+               │              ┌──────────▼──────────┐      │
+               │              │   departments       │      │
+               │              ├─────────────────────┤      │
+               │              │ PK: department_id   │      │
+               │              │     department_name │      │
+               │              └─────────────────────┘      │
+               │                                           │
+               │                                           │
+               │ used in                            used in│
+               │                                           │
+               │                                           │
+   ┌───────────▼──────────────────┐          ┌────────────▼─────────────────┐
+   │ order_products_train         │          │ order_products_prior          │
+   ├──────────────────────────────┤          ├───────────────────────────────┤
+   │ PK: (order_id, product_id)   │          │ FK: order_id                  │
+   │ FK: order_id                 │          │ FK: product_id                │
+   │ FK: product_id               │          │     add_to_cart_order         │
+   │     add_to_cart_order        │          │     reordered                 │
+   │     reordered                │          │     is_reordered              │
+   │     is_reordered             │          └────────────┬──────────────────┘
+   └──────────────┬───────────────┘                       │
+                  │                                       │
+                  │ N                                     │ N
+                  │                                       │
+                  │ contains                              │ contains
+                  │                                       │
+                  │ 1                                     │ 1
+         ┌────────▼───────────────────────────────────────▼────────┐
+         │                     orders                              │
+         ├─────────────────────────────────────────────────────────┤
+         │ PK: order_id                                            │
+         │     user_id                                             │
+         │     eval_set                                            │
+         │     order_number                                        │
+         │     order_dow                                           │
+         │     order_hour_of_day                                   │
+         │     days_since_prior_order (nullable)                   │
+         │     is_first_order                                      │
+         │     order_period                                        │
+         └─────────────────────────────────────────────────────────┘
+
+
+================================================================================
+TABLE DESCRIPTIONS & ROLES
+================================================================================
+
+1. AISLES (Reference/Lookup Table)
+   Role: Product classification by aisle location
+   Type: Master data / Dimension table
+   Examples: "fresh vegetables", "yogurt", "breakfast bars"
+
+2. DEPARTMENTS (Reference/Lookup Table)
+   Role: Top-level product categorization
+   Type: Master data / Dimension table
+   Examples: "produce", "dairy eggs", "frozen"
+
+3. PRODUCTS (Reference/Master Table)
+   Role: Product catalog with hierarchical categorization
+   Type: Master data / Dimension table
+   References: aisles (parent), departments (parent)
+   Referenced by: order_products_train, order_products_prior
+
+4. ORDERS (Transaction/Fact Table)
+   Role: Customer orders with timing and sequence information
+   Type: Fact table
+   Referenced by: order_products_train, order_products_prior
+
+5. ORDER_PRODUCTS_TRAIN (Transaction/Fact Table)
+   Role: Products in training dataset orders (line items)
+   Type: Fact table / Bridge table
+   References: orders (parent), products (parent)
+
+6. ORDER_PRODUCTS_PRIOR (Transaction/Fact Table)
+   Role: Products in historical orders (line items)
+   Type: Fact table / Bridge table
+   References: orders (parent), products (parent)
+
+
+================================================================================
+RELATIONSHIPS DETAILED
+================================================================================
+
+RELATIONSHIP 1: aisles → products
+├─ Type: One-to-Many (1:N)
+├─ Cardinality: One aisle can contain many products
+├─ Foreign Key: products.aisle_id → aisles.aisle_id
+├─ Constraint: FK with ON DELETE RESTRICT (cannot delete aisle with products)
+└─ Business Rule: Every product must belong to exactly one aisle
+
+RELATIONSHIP 2: departments → products
+├─ Type: One-to-Many (1:N)
+├─ Cardinality: One department can contain many products
+├─ Foreign Key: products.department_id → departments.department_id
+├─ Constraint: FK with ON DELETE RESTRICT
+└─ Business Rule: Every product must belong to exactly one department
+
+RELATIONSHIP 3: products → order_products_train
+├─ Type: One-to-Many (1:N)
+├─ Cardinality: One product can appear in many order line items
+├─ Foreign Key: order_products_train.product_id → products.product_id
+├─ Constraint: FK with ON DELETE RESTRICT
+└─ Business Rule: Every order line item must reference a valid product
+
+RELATIONSHIP 4: products → order_products_prior
+├─ Type: One-to-Many (1:N)
+├─ Cardinality: One product can appear in many historical orders
+├─ Foreign Key: order_products_prior.product_id → products.product_id
+├─ Constraint: FK with ON DELETE RESTRICT
+└─ Business Rule: Every prior order line item must reference a valid product
+
+RELATIONSHIP 5: orders → order_products_train
+├─ Type: One-to-Many (1:N)
+├─ Cardinality: One order can contain many products
+├─ Foreign Key: order_products_train.order_id → orders.order_id
+├─ Constraint: FK with ON DELETE CASCADE (delete order → delete line items)
+└─ Business Rule: Every order line item must reference a valid order
+
+RELATIONSHIP 6: orders → order_products_prior
+├─ Type: One-to-Many (1:N)
+├─ Cardinality: One order can contain many products
+├─ Foreign Key: order_products_prior.order_id → orders.order_id
+├─ Constraint: FK with ON DELETE CASCADE
+└─ Business Rule: Every prior order line item must reference a valid order
+
+
+================================================================================
+CARDINALITY SUMMARY
+================================================================================
+
+┌────────────────────────┬─────────────┬──────────────────────────┐
+│ Relationship           │ Cardinality │ Description              │
+├────────────────────────┼─────────────┼──────────────────────────┤
+│ aisles → products      │ 1:N         │ One aisle, many products │
+│ departments → products │ 1:N         │ One dept, many products  │
+│ products → opt_train   │ 1:N         │ One product, many orders │
+│ products → opt_prior   │ 1:N         │ One product, many orders │
+│ orders → opt_train     │ 1:N         │ One order, many products │
+│ orders → opt_prior     │ 1:N         │ One order, many products │
+└────────────────────────┴─────────────┴──────────────────────────┘
+
+Note: "opt" = order_products_train/prior
+
+
+================================================================================
+PRIMARY KEYS
+================================================================================
+
+aisles:                  PK = aisle_id
+departments:             PK = department_id
+products:                PK = product_id
+orders:                  PK = order_id
+order_products_train:    PK = (order_id, product_id) [COMPOSITE]
+order_products_prior:    No PK (performance optimization for large table)
+
+
+================================================================================
+FOREIGN KEYS
+================================================================================
+
+products:
+├─ FK1: aisle_id REFERENCES aisles(aisle_id)
+└─ FK2: department_id REFERENCES departments(department_id)
+
+order_products_train:
+├─ FK1: order_id REFERENCES orders(order_id)
+└─ FK2: product_id REFERENCES products(product_id)
+
+order_products_prior:
+├─ FK1: order_id REFERENCES orders(order_id)
+└─ FK2: product_id REFERENCES products(product_id)
+
+
+================================================================================
+INDEXES FOR PERFORMANCE
+================================================================================
+
+PRIMARY KEY INDEXES (Automatically created):
+├─ aisles: idx_aisles_pkey on aisle_id
+├─ departments: idx_departments_pkey on department_id
+├─ products: idx_products_pkey on product_id
+├─ orders: idx_orders_pkey on order_id
+└─ order_products_train: idx_order_products_train_pkey on (order_id, product_id)
+
+FOREIGN KEY INDEXES (Explicitly created for performance):
+├─ products: idx_products_aisle on aisle_id
+├─ products: idx_products_dept on department_id
+├─ order_products_train: idx_opt_order on order_id
+├─ order_products_prior: idx_opp_order on order_id
+└─ order_products_prior: idx_opp_product on product_id
+
+ADDITIONAL INDEXES:
+└─ orders: idx_orders_user on user_id (for customer analysis queries)
+
+
+================================================================================
+REFERENTIAL INTEGRITY RULES
+================================================================================
+
+ON DELETE Behaviors:
+├─ aisles → products: RESTRICT (cannot delete aisle with products)
+├─ departments → products: RESTRICT (cannot delete dept with products)
+├─ products → order_products: RESTRICT (cannot delete product with orders)
+├─ orders → order_products_train: CASCADE (delete order → delete line items)
+└─ orders → order_products_prior: CASCADE (delete order → delete line items)
+
+ON UPDATE Behaviors:
+└─ All foreign keys: CASCADE (update propagates to child records)
+
+
+================================================================================
+DATA FLOW & DEPENDENCIES
+================================================================================
+
+Load Order (to maintain referential integrity):
+
+1. aisles          (no dependencies)
+2. departments     (no dependencies)
+3. products        (depends on: aisles, departments)
+4. orders          (no dependencies - independent from products)
+5. order_products_train (depends on: orders, products)
+6. order_products_prior (depends on: orders, products)
+
+This order ensures foreign key constraints are never violated during loading.
+
+
+================================================================================
+NORMALIZATION LEVEL
+================================================================================
+
+The database schema follows Third Normal Form (3NF):
+
+✓ 1NF: All columns contain atomic values
+       No repeating groups
+       Each table has a primary key
+
+✓ 2NF: All non-key attributes fully depend on the primary key
+       No partial dependencies
+
+✓ 3NF: No transitive dependencies
+       All non-key attributes depend only on the primary key
+
+DENORMALIZATION DECISIONS:
+- order_period stored in orders table (derived from order_hour_of_day)
+  Reason: Query performance optimization, avoid repeated calculation
+- is_first_order stored in orders table (derived from days_since_prior_order)
+  Reason: Simplified querying, improved readability
+- is_reordered stored in order_products tables (derived from reordered)
+  Reason: Boolean flag easier to use in queries than numeric comparison
+
+
+================================================================================
+SCHEMA ADVANTAGES
+================================================================================
+
+1. SCALABILITY
+   - Normalized structure reduces data redundancy
+   - Indexes optimize query performance
+   - Chunked loading handles large datasets (32M+ rows)
+
+2. DATA INTEGRITY
+   - Foreign key constraints ensure referential integrity
+   - Primary keys prevent duplicates
+   - NOT NULL constraints enforce required data
+
+3. QUERY PERFORMANCE
+   - Strategic indexes on frequently queried columns
+   - Denormalized derived columns avoid expensive calculations
+   - Proper join paths enable efficient analytics
+
+4. MAINTAINABILITY
+   - Clear table relationships
+   - Logical structure reflects business domain
+   - Easy to extend (add new tables/columns)
+
+5. ANALYTICAL POWER
+   - Star schema-like structure (facts & dimensions)
+   - Enables complex business intelligence queries
+   - Supports data mining and machine learning
+
+
+================================================================================
+BUSINESS DOMAIN MODEL
+================================================================================
+
+DOMAIN ENTITIES:
+├─ Customer: Represented by user_id in orders table
+├─ Product: products table with hierarchical categorization
+├─ Order: orders table with timing and sequence information
+├─ Order Line Item: order_products_train/prior tables
+├─ Product Category: departments table (top-level)
+└─ Product Subcategory: aisles table (detailed)
+
+BUSINESS PROCESS:
+1. Customer places an order (creates record in orders)
+2. Customer adds products to cart (creates records in order_products)
+3. Each product belongs to an aisle and department (classification)
+4. Orders occur at specific times (hour, day of week)
+5. Customers may reorder products (tracked via reordered flag)
+6. Order frequency tracked via days_since_prior_order
+
+
+================================================================================
+SAMPLE QUERIES USING RELATIONSHIPS
+================================================================================
+
+Q1: Find all products in the "produce" department
+SELECT p.product_name
+FROM products p
+JOIN departments d ON p.department_id = d.department_id
+WHERE d.department_name = 'produce';
+
+Q2: Find all orders containing organic products
+SELECT DISTINCT o.order_id, o.user_id
+FROM orders o
+JOIN order_products_train opt ON o.order_id = opt.order_id
+JOIN products p ON opt.product_id = p.product_id
+WHERE p.product_name LIKE '%Organic%';
+
+Q3: Count products per aisle
+SELECT a.aisle_name, COUNT(p.product_id) AS product_count
+FROM aisles a
+LEFT JOIN products p ON a.aisle_id = p.aisle_id
+GROUP BY a.aisle_name
+ORDER BY product_count DESC;
+
+Q4: Find customers who reorder frequently
+SELECT o.user_id, 
+       COUNT(*) AS total_orders,
+       SUM(CASE WHEN opt.is_reordered THEN 1 ELSE 0 END) AS reorder_count
+FROM orders o
+JOIN order_products_train opt ON o.order_id = opt.order_id
+GROUP BY o.user_id
+HAVING SUM(CASE WHEN opt.is_reordered THEN 1 ELSE 0 END) > 10
+ORDER BY reorder_count DESC;
+
+
+================================================================================
+CONCLUSION
+================================================================================
+
+This ER diagram represents a well-normalized, scalable database schema for
+analyzing customer ordering behavior in an e-commerce grocery platform.
+
+The schema supports:
+✓ Efficient data storage with minimal redundancy
+✓ Fast analytical queries through strategic indexing
+✓ Data integrity through foreign key constraints
+✓ Flexible analysis of customer, product, and ordering patterns
+
+The design balances normalization (reducing redundancy) with performance
+(strategic denormalization of derived columns) to create a production-ready
+database for big data analytics.
+
+
+================================================================================
+END OF ER DIAGRAM DOCUMENTATION
+================================================================================
